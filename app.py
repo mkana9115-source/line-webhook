@@ -7,7 +7,7 @@
 #   GMAIL_USER           - 送信元Gmailアドレス
 #   GMAIL_APP_PASSWORD   - GmailのアプリパスワードI(16文字)
 #   NOTIFY_EMAIL         - 通知先メールアドレス（省略時はGMAIL_USERと同じ）
-#   ANTHROPIC_API_KEY    - Claude AI APIキー
+#   GEMINI_API_KEY       - Google AI Studio APIキー
 
 import os
 import hmac
@@ -20,7 +20,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, jsonify, abort
 from dotenv import load_dotenv
-import anthropic
+import google.generativeai as genai
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -32,7 +32,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 GMAIL_USER          = os.getenv("GMAIL_USER", "")
 GMAIL_APP_PASSWORD  = os.getenv("GMAIL_APP_PASSWORD", "")
 NOTIFY_EMAIL        = os.getenv("NOTIFY_EMAIL") or GMAIL_USER
-ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
+GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY", "")
 
 MSG_LABELS = {
     "text":     "テキスト",
@@ -63,16 +63,15 @@ def _verify_signature(body: bytes, sig: str) -> bool:
 
 
 def _suggest_reply(customer_message: str) -> str:
-    """Claude AIにお客様メッセージを渡して返信案を生成する"""
+    """Google GeminiにI客様メッセージを渡して返信案を生成する"""
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=512,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": customer_message}],
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            system_instruction=SYSTEM_PROMPT,
         )
-        return response.content[0].text.strip()
+        response = model.generate_content(customer_message)
+        return response.text.strip()
     except Exception as e:
         logger.error("AI返信案生成失敗: %s", e)
         return "（AI返信案の生成に失敗しました）"

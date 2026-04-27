@@ -1,12 +1,13 @@
 # LINE公式アカウントWebhookサーバー
 #
-# 機能: LINEお客様メッセージ受信 → Gmail通知
+# 機能: LINEお客様メッセージ受信 → AI返信案生成 → Gmail通知
 # 起動: gunicorn app:app (本番) / python app.py (開発確認)
 # 必要環境変数:
 #   LINE_CHANNEL_SECRET  - LINE DevelopersコンソールのChannel Secret
 #   GMAIL_USER           - 送信元Gmailアドレス
 #   GMAIL_APP_PASSWORD   - GmailのアプリパスワードI(16文字)
 #   NOTIFY_EMAIL         - 通知先メールアドレス（省略時はGMAIL_USERと同じ）
+#   ANTHROPIC_API_KEY    - Claude AI APIキー
 
 import os
 import hmac
@@ -19,6 +20,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, jsonify, abort
 from dotenv import load_dotenv
+import anthropic
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -30,6 +32,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 GMAIL_USER          = os.getenv("GMAIL_USER", "")
 GMAIL_APP_PASSWORD  = os.getenv("GMAIL_APP_PASSWORD", "")
 NOTIFY_EMAIL        = os.getenv("NOTIFY_EMAIL") or GMAIL_USER
+ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
 
 MSG_LABELS = {
     "text":     "テキスト",
@@ -41,11 +44,38 @@ MSG_LABELS = {
     "sticker":  "スタンプ",
 }
 
+SYSTEM_PROMPT = """あなたはネットショップの公式LINEカスタマーサポートアシスタントです。
+お客様からのメッセージを読んで、店舗オーナーが送る丁寧な返信案を1つ提案してください。
+
+返信のガイドライン:
+- 返品・交換の問い合わせ → まず注文番号と理由を確認する
+- 配送・発送の問い合わせ → 注文番号を確認する
+- 商品の在庫・詳細の問い合わせ → 具体的な商品名を確認する
+- クレーム・不満 → 誠実にお詫びし、解決策を提示する
+- 常に丁寧で温かみのある言葉遣いを使う（「〜でございます」調）
+- 返信案のみを出力し、説明や前置きは不要"""
+
 
 def _verify_signature(body: bytes, sig: str) -> bool:
     """LINEプラットフォームからのリクエストか検証する"""
     digest = hmac.new(LINE_CHANNEL_SECRET.encode(), body, hashlib.sha256).digest()
     return hmac.compare_digest(base64.b64encode(digest).decode(), sig)
+
+
+def _suggest_reply(customer_message: str) -> str:
+    """Claude AIにお客様メッセージを渡して返信案を生成する"""
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": customer_message}],
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        logger.error("AI返信案生成失敗: %s", e)
+        return "（AI返信案の生成に失敗しました）"
 
 
 def _send_gmail(subject: str, text: str) -> None:
@@ -80,12 +110,18 @@ def webhook():
         label = MSG_LABELS.get(mtype, mtype)
 
         if mtype == "text":
-            subject   = "【公式LINE】新しいメッセージが届きました"
-            body_text = (
+            customer_text = m.get("text", "")
+            ai_reply      = _suggest_reply(customer_text)
+            subject       = "【公式LINE】新しいメッセージが届きました"
+            body_text     = (
                 f"公式LINEにお客様からメッセージが届きました。\n\n"
                 f"送信者ID : {uid}\n"
-                f"内容     : {m.get('text', '')}\n\n"
-                "LINEアプリからご返信ください。"
+                f"内容     : {customer_text}\n\n"
+                f"{'─' * 30}\n"
+                f"【AIが提案する返信案】\n\n"
+                f"{ai_reply}\n\n"
+                f"{'─' * 30}\n"
+                "※この返信案はAIによる提案です。内容をご確認の上、LINEアプリから手動で送信してください。"
             )
         else:
             subject   = f"【公式LINE】{label}が届きました"

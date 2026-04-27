@@ -20,7 +20,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, jsonify, abort
 from dotenv import load_dotenv
-import google.generativeai as genai
+import requests
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -63,13 +63,17 @@ def _verify_signature(body: bytes, sig: str) -> bool:
 
 
 def _suggest_reply(customer_message: str) -> str:
-    """Google GeminiにI客様メッセージを渡して返信案を生成する"""
+    """Google Gemini REST APIに直接アクセスして返信案を生成する"""
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(model_name="gemini-pro")
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+        )
         prompt = f"{SYSTEM_PROMPT}\n\nお客様のメッセージ:\n{customer_message}"
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        res = requests.post(url, json=payload, timeout=30)
+        res.raise_for_status()
+        return res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
         logger.error("AI返信案生成失敗: %s", e)
         return "（AI返信案の生成に失敗しました）"

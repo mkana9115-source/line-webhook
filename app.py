@@ -66,11 +66,9 @@ def _suggest_reply(customer_message: str) -> str:
     """Google GeminiにI客様メッセージを渡して返信案を生成する"""
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=SYSTEM_PROMPT,
-        )
-        response = model.generate_content(customer_message)
+        model = genai.GenerativeModel(model_name="gemini-pro")
+        prompt = f"{SYSTEM_PROMPT}\n\nお客様のメッセージ:\n{customer_message}"
+        response = model.generate_content(prompt)
         return response.text.strip()
     except Exception as e:
         logger.error("AI返信案生成失敗: %s", e)

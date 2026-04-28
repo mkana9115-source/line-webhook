@@ -63,20 +63,26 @@ def _verify_signature(body: bytes, sig: str) -> bool:
 
 
 def _suggest_reply(customer_message: str) -> str:
-    """Google Gemini REST APIに直接アクセスして返信案を生成する"""
-    try:
+    """Google Gemini REST APIに直接アクセスして返信案を生成する（リトライあり）"""
+    import time
+    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro"]
+    prompt = f"{SYSTEM_PROMPT}\n\nお客様のメッセージ:\n{customer_message}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    for model in models:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            f"{model}:generateContent?key={GEMINI_API_KEY}"
         )
-        prompt = f"{SYSTEM_PROMPT}\n\nお客様のメッセージ:\n{customer_message}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        res = requests.post(url, json=payload, timeout=30)
-        res.raise_for_status()
-        return res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        logger.error("AI返信案生成失敗: %s", e)
-        return "（AI返信案の生成に失敗しました）"
+        for attempt in range(3):
+            try:
+                res = requests.post(url, json=payload, timeout=30)
+                res.raise_for_status()
+                return res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception as e:
+                logger.warning("モデル %s 試行 %d 失敗: %s", model, attempt + 1, e)
+                time.sleep(2)
+    logger.error("全モデルで返信案生成失敗")
+    return "（AI返信案を生成できませんでした。LINEアプリから直接ご返信ください）"
 
 
 def _send_gmail(subject: str, text: str) -> None:

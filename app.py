@@ -16,6 +16,7 @@ import base64
 import json
 import smtplib
 import logging
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, jsonify, abort
@@ -64,31 +65,26 @@ def _verify_signature(body: bytes, sig: str) -> bool:
 
 def _suggest_reply(customer_message: str) -> str:
     """Groq API（Llama 3）にアクセスして返信案を生成する"""
-    import time
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "llama3-8b-8192",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": customer_message},
         ],
         "max_tokens": 512,
     }
-    for attempt in range(3):
-        try:
-            res = requests.post(url, headers=headers, json=payload, timeout=30)
-            res.raise_for_status()
-            return res.json()["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            logger.warning("試行 %d 失敗: %s", attempt + 1, str(e)[:80])
-            if attempt < 2:
-                time.sleep(2)
-    logger.error("AI返信案生成失敗")
-    return "（AI返信案を生成できませんでした。LINEアプリから直接ご返信ください）"
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
+        res.raise_for_status()
+        return res.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.error("AI返信案生成失敗: %s", str(e)[:100])
+        return "（AI返信案を生成できませんでした。LINEアプリから直接ご返信ください）"
 
 
 def _send_gmail(subject: str, text: str) -> None:
@@ -104,6 +100,41 @@ def _send_gmail(subject: str, text: str) -> None:
     logger.info("通知メール送信完了: %s → %s", subject, NOTIFY_EMAIL)
 
 
+def _process_event(event: dict) -> None:
+    """メッセージ処理とメール送信をバックグラウンドで行う"""
+    m     = event["message"]
+    uid   = event.get("source", {}).get("userId", "不明")
+    mtype = m.get("type", "不明")
+    label = MSG_LABELS.get(mtype, mtype)
+
+    if mtype == "text":
+        customer_text = m.get("text", "")
+        ai_reply      = _suggest_reply(customer_text)
+        subject       = "【公式LINE】新しいメッセージが届きました"
+        body_text     = (
+            f"公式LINEにお客様からメッセージが届きました。\n\n"
+            f"送信者ID : {uid}\n"
+            f"内容     : {customer_text}\n\n"
+            f"{'─' * 30}\n"
+            f"【AIが提案する返信案】\n\n"
+            f"{ai_reply}\n\n"
+            f"{'─' * 30}\n"
+            "※この返信案はAIによる提案です。内容をご確認の上、LINEアプリから手動で送信してください。"
+        )
+    else:
+        subject   = f"【公式LINE】{label}が届きました"
+        body_text = (
+            f"公式LINEにお客様から{label}が届きました。\n\n"
+            f"送信者ID : {uid}\n\n"
+            "LINEアプリでご確認・ご返信ください。"
+        )
+
+    try:
+        _send_gmail(subject, body_text)
+    except Exception as e:
+        logger.error("メール送信失敗: %s", e)
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     sig  = request.headers.get("X-Line-Signature", "")
@@ -116,38 +147,8 @@ def webhook():
     for event in json.loads(body).get("events", []):
         if event.get("type") != "message":
             continue
-
-        m     = event["message"]
-        uid   = event.get("source", {}).get("userId", "不明")
-        mtype = m.get("type", "不明")
-        label = MSG_LABELS.get(mtype, mtype)
-
-        if mtype == "text":
-            customer_text = m.get("text", "")
-            ai_reply      = _suggest_reply(customer_text)
-            subject       = "【公式LINE】新しいメッセージが届きました"
-            body_text     = (
-                f"公式LINEにお客様からメッセージが届きました。\n\n"
-                f"送信者ID : {uid}\n"
-                f"内容     : {customer_text}\n\n"
-                f"{'─' * 30}\n"
-                f"【AIが提案する返信案】\n\n"
-                f"{ai_reply}\n\n"
-                f"{'─' * 30}\n"
-                "※この返信案はAIによる提案です。内容をご確認の上、LINEアプリから手動で送信してください。"
-            )
-        else:
-            subject   = f"【公式LINE】{label}が届きました"
-            body_text = (
-                f"公式LINEにお客様から{label}が届きました。\n\n"
-                f"送信者ID : {uid}\n\n"
-                "LINEアプリでご確認・ご返信ください。"
-            )
-
-        try:
-            _send_gmail(subject, body_text)
-        except Exception as e:
-            logger.error("メール送信失敗: %s", e)
+        # バックグラウンドで処理することでLINEへの応答を即座に返す
+        threading.Thread(target=_process_event, args=(event,), daemon=True).start()
 
     return jsonify({"status": "ok"})
 

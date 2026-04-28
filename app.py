@@ -7,7 +7,7 @@
 #   GMAIL_USER           - 送信元Gmailアドレス
 #   GMAIL_APP_PASSWORD   - GmailのアプリパスワードI(16文字)
 #   NOTIFY_EMAIL         - 通知先メールアドレス（省略時はGMAIL_USERと同じ）
-#   GEMINI_API_KEY       - Google AI Studio APIキー
+#   GROQ_API_KEY         - Groq APIキー（無料）
 
 import os
 import hmac
@@ -32,7 +32,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 GMAIL_USER          = os.getenv("GMAIL_USER", "")
 GMAIL_APP_PASSWORD  = os.getenv("GMAIL_APP_PASSWORD", "")
 NOTIFY_EMAIL        = os.getenv("NOTIFY_EMAIL") or GMAIL_USER
-GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY", "")
+GROQ_API_KEY        = os.getenv("GROQ_API_KEY", "")
 
 MSG_LABELS = {
     "text":     "テキスト",
@@ -63,25 +63,31 @@ def _verify_signature(body: bytes, sig: str) -> bool:
 
 
 def _suggest_reply(customer_message: str) -> str:
-    """Google Gemini REST APIに直接アクセスして返信案を生成する（リトライあり）"""
+    """Groq API（Llama 3）にアクセスして返信案を生成する"""
     import time
-    models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro"]
-    prompt = f"{SYSTEM_PROMPT}\n\nお客様のメッセージ:\n{customer_message}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    for model in models:
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={GEMINI_API_KEY}"
-        )
-        for attempt in range(3):
-            try:
-                res = requests.post(url, json=payload, timeout=30)
-                res.raise_for_status()
-                return res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            except Exception as e:
-                logger.warning("モデル %s 試行 %d 失敗: %s", model, attempt + 1, e)
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": customer_message},
+        ],
+        "max_tokens": 512,
+    }
+    for attempt in range(3):
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=30)
+            res.raise_for_status()
+            return res.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            logger.warning("試行 %d 失敗: %s", attempt + 1, str(e)[:80])
+            if attempt < 2:
                 time.sleep(2)
-    logger.error("全モデルで返信案生成失敗")
+    logger.error("AI返信案生成失敗")
     return "（AI返信案を生成できませんでした。LINEアプリから直接ご返信ください）"
 
 

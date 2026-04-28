@@ -71,7 +71,7 @@ def _suggest_reply(customer_message: str) -> str:
         "Content-Type": "application/json",
     }
     payload = {
-        "model": "llama3-8b-8192",
+        "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": customer_message},

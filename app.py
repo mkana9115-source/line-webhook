@@ -1,12 +1,11 @@
 # LINE公式アカウントWebhookサーバー
 #
-# 機能: LINEお客様メッセージ受信 → AI返信案生成 → Gmail通知
+# 機能: LINEお客様メッセージ受信 → AI返信案生成 → メール通知
 # 起動: gunicorn app:app (本番) / python app.py (開発確認)
 # 必要環境変数:
 #   LINE_CHANNEL_SECRET  - LINE DevelopersコンソールのChannel Secret
-#   GMAIL_USER           - 送信元Gmailアドレス
-#   GMAIL_APP_PASSWORD   - GmailのアプリパスワードI(16文字)
-#   NOTIFY_EMAIL         - 通知先メールアドレス（省略時はGMAIL_USERと同じ）
+#   RESEND_API_KEY       - Resend APIキー（無料）
+#   NOTIFY_EMAIL         - 通知先メールアドレス
 #   GROQ_API_KEY         - Groq APIキー（無料）
 
 import os
@@ -14,11 +13,8 @@ import hmac
 import hashlib
 import base64
 import json
-import smtplib
 import logging
 import threading
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, jsonify, abort
 from dotenv import load_dotenv
 import requests
@@ -30,9 +26,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
-GMAIL_USER          = os.getenv("GMAIL_USER", "")
-GMAIL_APP_PASSWORD  = os.getenv("GMAIL_APP_PASSWORD", "")
-NOTIFY_EMAIL        = os.getenv("NOTIFY_EMAIL") or GMAIL_USER
+RESEND_API_KEY      = os.getenv("RESEND_API_KEY", "")
+NOTIFY_EMAIL        = os.getenv("NOTIFY_EMAIL", "")
 GROQ_API_KEY        = os.getenv("GROQ_API_KEY", "")
 
 MSG_LABELS = {
@@ -94,15 +89,19 @@ def _suggest_reply(customer_message: str) -> str:
 
 
 def _send_gmail(subject: str, text: str) -> None:
-    """Gmail SMTPで通知メールを送信する"""
-    msg = MIMEMultipart()
-    msg["From"]    = GMAIL_USER
-    msg["To"]      = NOTIFY_EMAIL
-    msg["Subject"] = subject
-    msg.attach(MIMEText(text, "plain", "utf-8"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-        server.send_message(msg)
+    """Resend APIで通知メールを送信する"""
+    res = requests.post(
+        "https://api.resend.com/emails",
+        headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+        json={
+            "from": "LA CORDIA通知 <onboarding@resend.dev>",
+            "to": [NOTIFY_EMAIL],
+            "subject": subject,
+            "text": text,
+        },
+        timeout=15,
+    )
+    res.raise_for_status()
     logger.info("通知メール送信完了: %s → %s", subject, NOTIFY_EMAIL)
 
 
